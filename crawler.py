@@ -1,100 +1,123 @@
 import requests
 from bs4 import BeautifulSoup
 import time
+from konlpy.tag import Okt
+from collections import Counter
+from wordcloud import WordCloud
+import matplotlib.pyplot as plt
+import platform
 
-# 1. 공통 헤더 설정 (브라우저인 척 속이기 위함)
-# 봇 차단을 막기 위해 User-Agent를 설정하는 것이 필수입니다.
+# 1. 공통 헤더 설정
 headers = {
     'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/110.0.0.0 Safari/537.36'
 }
 
 
+# --- (기존 작성하신 크롤링 함수들) ---
 def get_naver_news_headlines():
-    """
-    네이버 뉴스 '속보(Breaking News)' 섹션의 헤드라인을 가져옵니다.
-    """
-    url = "https://news.naver.com/main/list.naver?mode=LSD&mid=sec&sid1=001"  # 속보 페이지
+    url = "https://news.naver.com/main/list.naver?mode=LSD&mid=sec&sid1=001"
     data_list = []
-
     try:
         response = requests.get(url, headers=headers)
         soup = BeautifulSoup(response.text, 'html.parser')
-
-        # 뉴스 리스트 영역 선택 (HTML 구조 분석 결과)
-        # headline 기사와 일반 기사가 섞여 있어서 두 그룹을 모두 찾습니다.
         articles = soup.select('.type06_headline li dl') + soup.select('.type06 li dl')
-
-        print(f"✅ 네이버 뉴스 수집 중... ({len(articles)}개 발견)")
-
         for article in articles:
-            # a 태그 찾기 (제목과 링크가 들어있음)
-            link_tag = article.select_one('dt:not(.photo) a')  # 사진 없는 dt 태그 우선
-            if link_tag is None:
-                link_tag = article.select_one('dt.photo a')  # 없으면 사진 있는 태그
-
+            link_tag = article.select_one('dt:not(.photo) a') or article.select_one('dt.photo a')
             if link_tag:
                 title = link_tag.text.strip()
-                link = link_tag['href']
-
-                # 내용이 비어있지 않은 경우만 추가
                 if title:
-                    data_list.append({'source': 'Naver News', 'title': title, 'link': link})
-
+                    data_list.append({'source': 'Naver News', 'title': title})
     except Exception as e:
-        print(f"❌ 네이버 뉴스 크롤링 에러: {e}")
-
+        print(f"❌ 네이버 뉴스 에러: {e}")
     return data_list
 
 
 def get_community_best():
-    """
-    디시인사이드 '실시간 베스트' 게시판 제목을 가져옵니다.
-    (커뮤니티는 HTML 구조가 자주 바뀌므로 주의 필요)
-    """
     url = "https://gall.dcinside.com/board/lists/?id=dcbest&list_num=100&sort_type=N&search_head=1&page=1"
     data_list = []
-
     try:
         response = requests.get(url, headers=headers)
         soup = BeautifulSoup(response.text, 'html.parser')
-
-        # 게시글 리스트 선택 (tr 태그 중 class가 ub-content 인 것)
         posts = soup.select('.gall_list .ub-content')
-
-        print(f"✅ 커뮤니티 수집 중... ({len(posts)}개 발견)")
-
         for post in posts:
             title_tag = post.select_one('.gall_tit a')
             if title_tag:
                 title = title_tag.text.strip()
-                link = "https://gall.dcinside.com/board/lists/?id=dcbest&list_num=100&sort_type=N&search_head=1&page=1" + title_tag['href']
-
                 if title:
-                    data_list.append({'source': 'Community', 'title': title, 'link': link})
-
+                    data_list.append({'source': 'Community', 'title': title})
     except Exception as e:
-        print(f"❌ 커뮤니티 크롤링 에러: {e}")
-
+        print(f"❌ 커뮤니티 에러: {e}")
     return data_list
+
+
+# --- 2. 분석 및 시각화 함수 (새로 추가됨) ---
+def analyze_and_visualize(data_list):
+    print("\n⏳ 형태소 분석 및 워드클라우드 생성 중...")
+
+    okt = Okt()
+    noun_list = []
+
+    # 2-1. 불용어 리스트 (분석 결과 보면서 계속 추가해야 함)
+    stop_words = {'속보', '충격', '오늘', '실시간', '근황', '이', '그', '저', '것', '수', '등', '들', '제', '명', '회', '개'}
+
+    for item in data_list:
+        title = item['title']
+        # 명사 추출
+        nouns = okt.nouns(title)
+
+        for noun in nouns:
+            # 한 글자 제외 및 불용어 제외
+            if len(noun) > 1 and noun not in stop_words:
+                noun_list.append(noun)
+
+    # 빈도수 계산
+    count = Counter(noun_list)
+    tags = count.most_common(50)  # 상위 50개만
+
+    if not tags:
+        print("❌ 추출된 명사가 없습니다.")
+        return
+
+    print("🔥 상위 키워드 TOP 10:", tags[:10])
+
+    # 2-2. 한글 폰트 설정 (OS에 따라 경로가 다름)
+    if platform.system() == 'Windows':
+        font_path = 'C:/Windows/Fonts/malgun.ttf'  # 윈도우 맑은고딕
+    elif platform.system() == 'Darwin':
+        font_path = '/System/Library/Fonts/AppleGothic.ttf'  # 맥 애플고딕
+    else:
+        font_path = '/usr/share/fonts/truetype/nanum/NanumGothic.ttf'  # 리눅스(나눔고딕)
+
+    # 2-3. 워드클라우드 생성
+    wc = WordCloud(
+        font_path=font_path,
+        background_color='white',
+        width=800,
+        height=600,
+        max_words=50
+    )
+
+    # 빈도수 기반으로 생성
+    wc.generate_from_frequencies(dict(tags))
+
+    # 2-4. 이미지 출력
+    plt.figure(figsize=(10, 8))
+    plt.imshow(wc, interpolation='bilinear')
+    plt.axis('off')  # X, Y축 눈금 제거
+    plt.show()
 
 
 # --- 메인 실행부 ---
 if __name__ == "__main__":
     print("--- 🚀 데이터 수집 시작 ---")
 
-    # 1. 뉴스 수집
     news_data = get_naver_news_headlines()
-
-    # 2. 커뮤니티 수집
-    # (서버 부하를 줄이기 위해 잠시 대기)
-    time.sleep(1)
+    time.sleep(1)  # 차단 방지 딜레이
     community_data = get_community_best()
 
-    # 3. 결과 합치기
     all_data = news_data + community_data
 
-    print("\n--- 📊 수집 결과 (상위 10개만 출력) ---")
-    for idx, item in enumerate(all_data[:10], 1):
-        print(f"[{idx}] [{item['source']}] {item['title']}")
+    print(f"✅ 총 {len(all_data)}개의 제목 수집 완료.")
 
-    print(f"\n총 {len(all_data)}개의 데이터를 수집했습니다.")
+    # 분석 및 시각화 실행
+    analyze_and_visualize(all_data)
